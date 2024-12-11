@@ -1,0 +1,373 @@
+---
+title: "workflow_real_data"
+date: "2024-12-07"
+output: pdf_document
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction
+This R Markdown file demonstrates the workflow of the real case study described in the paper "Nonparametric Bayesian Additive Regression Trees for Prediction and Missing Data Imputation in Longitudinal Studies". Due to the extensive computational time required to impute the large dataset, this example uses a insufficient number of MCMC burn-in and sampling iterations for illustration purposes. Specifically, for sequential imputation methods, only 2 burn-in iterations and 20 sampling iterations are run in this example. To reproduce the results presented in the paper, 3000 burn-in iterations and 4000 sampling iterations with a skip size of 200 are required.
+
+## Install and load the related package
+```{r setup}
+require("devtools")
+devtools::install_github("https://github.com/zjg540066169/SBMTrees")
+library(SBMTrees)
+library(lme4)
+library(jomo)
+library(MixRF)
+library(tidyverse)
+```
+
+
+# Data pre-processing
+
+In this section, we pre-process the MESA dataset by extracting the necessary covariates and outcomes and formatting the measures for loss to follow-up. 
+
+We first read the data.
+```{r data_read}
+X = read_csv("./mesa.csv")
+
+X_new = X %>% 
+  mutate(
+    age = (age),
+    race = as.logical(race),
+    female = as.logical(female),
+    smk_cur = as.logical(smk_cur),
+    lipid_med = as.logical(lipid_med),
+    htn_med = as.logical(htn_med),
+    followup = TRUE
+  ) %>% 
+  arrange(id, exam) 
+```
+
+Then we produce the numbers in Web Table 4 in Supplementary Materials.
+```{r}
+library(table1)
+table1(~age + race + sex + bmi + smk_cur + lipid_med+ height + weight + waist + hdl + ldl + htn_med + sbp | exam, data = dplyr::select(X_new, exam, age, race, female, bmi, smk_cur, lipid_med, height, weight, waist, hdl, ldl, htn_med, sbp) %>% 
+  mutate(
+    age = as.integer(age),
+    race = factor(ifelse(race == TRUE, "white", "non-white"), levels = c("white", "non-white")),
+    sex = ifelse(female == TRUE, "female", "male"),
+    exam = as.factor(exam)
+  ), overall = FALSE)
+```
+
+We format the loss to follow-up measures, such that every individual has six measures. After that, we extract the important variables.
+```{r format_lfu}
+for(i in unique(X_new$id)){
+  for(t in 1:6){
+    if(sum(X_new$id ==i & X_new$exam == t) == 0){
+      message("add the loss to follow-up measures for individual ", i, " at time ", t, "\n")
+      X_new = add_row(X_new, id = i, exam = t, followup = FALSE)
+    }
+  }
+}
+X_new = arrange(X_new, id, exam)
+
+covariates = dplyr::select(X_new,  age, race, female, bmi, smk_cur, lipid_med, height, weight, waist, hdl, ldl) %>% 
+  mutate(
+    age = as.integer(age)
+  ) %>% 
+  dplyr::select(age, race, female,  bmi, smk_cur, lipid_med, height, weight, waist, hdl, ldl)
+
+assignment = pull(X_new, htn_med)
+time =  pull(X_new, exam)
+outcome = pull(X_new, sbp)
+subject_id = pull(X_new, id)
+```
+
+We prepare the variables for imputation. The random predictor matrix includes a linear time term, \((1, j)\), where \(j\) represents time.
+```{r prepare}
+X = cbind(as.data.frame(covariates),assignment)
+Y = outcome
+Z = cbind(1,as.matrix(time))
+
+# types of variables are continuous, binary, binary, continuous, binary, binary, continuous, continuous, continuous, continuous, continuous, binary
+type = c(0, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 1) 
+```
+
+# Data imputation 
+The imputation methods include sequential imputation with BMTrees, BMTrees_R, BMTrees_RE, mixedBART, JM_MLMM (by `jomo` package) and mixedRF (in sequential regression multivariate imputation, with the first round). The imputation by BMTrees, BMTrees_R, BMTrees_RE, mixedBART can be completed by the function `sequential_imputation`. We specify 2 iterations for burn-in and sample 2 iterations for these Bayesian methods. For BMTrees and BMTrees_R, we specify the resampling number as 5. To reproduce the results presented in the paper, please increase to 3000 burn-in iterations and 4000 sampling iterations with a skip size of 200.
+
+
+```{r imputation_BMTrees}
+imputation_BMTrees <- sequential_imputation(
+  X,
+  Y,
+  Z, 
+  subject_id, 
+  type = type, 
+  binary_outcome = FALSE, 
+  model = "BMTrees", 
+  nburn = 2L, 
+  npost = 2L, 
+  skip = 1L, 
+  verbose = FALSE, 
+  seed = 1234,
+  resample = 5
+)
+
+imputation_BMTrees_R <- sequential_imputation(
+  X,
+  Y,
+  Z, 
+  subject_id, 
+  type = type, 
+  binary_outcome = FALSE, 
+  model = "BMTrees_R", 
+  nburn = 2L, 
+  npost = 2L, 
+  skip = 1L, 
+  verbose = FALSE, 
+  seed = 1234,
+  resample = 5
+)
+
+imputation_BMTrees_RE <- sequential_imputation(
+  X,
+  Y,
+  Z, 
+  subject_id, 
+  type = type, 
+  binary_outcome = FALSE, 
+  model = "BMTrees_RE", 
+  nburn = 2L, 
+  npost = 2L, 
+  skip = 1L, 
+  verbose = FALSE, 
+  seed = 1234
+)
+
+imputation_mixedBART <- sequential_imputation(
+  X,
+  Y,
+  Z, 
+  subject_id, 
+  type = type, 
+  binary_outcome = FALSE, 
+  model = "mixedBART", 
+  nburn = 2L, 
+  npost = 2L, 
+  skip = 1L, 
+  verbose = FALSE, 
+  seed = 1234
+)
+```
+
+We also run JM_MLMM from the package `jomo`. we run 30 MCMC iterations, excluding the initial 10 as burn-in, and generate 20 datasets from the posterior samples. To reproduce the results presented in the paper, please run 21,000 MCMC iterations, excluding the initial 1,000 as burn-in, and generate 20 datasets by sampling every 1,000th iteration from the posterior samples.
+```{r imputation_JM_MLMM}
+JM_MLMM = function(X, Y = NULL, Z, subject_id, type, n_imp = 20, nburn = 1000, nbetween=1000, seed = NULL, colnames_ = NULL){
+  if (!is.null(seed))
+    set.seed(seed)
+  
+  if (is.null(Y))
+    X_imp = array(0, dim = c(n_imp, dim(X)[1], dim(X)[2]))
+  else
+    X_imp = array(0, dim = c(n_imp, dim(X)[1], dim(X)[2] + 1))
+  
+  X_copy = as.matrix(X)
+  X_copy = as.data.frame(X_copy)# %>% 
+  for(i in 1:dim(X)[2]){
+    if(type[i] == 1)
+      X_copy[,i] = factor(X_copy[,i], levels = c(0, 1))
+  }
+  
+  if(!is.null(Y))
+    Y_copy = as.matrix(Y)
+  
+  if(!is.null(Y))
+    jomo_1 = jomo(Y = cbind(X_copy, Y_copy), Z = data.frame(Z), clus = subject_id, meth = "common", nimp = n_imp, nburn = nburn, nbetween=nbetween)
+  else
+    jomo_1 = jomo(Y = cbind(X_copy), Z = data.frame(Z), clus = subject_id, meth = "common", nimp = n_imp, nburn = nburn, nbetween=nbetween)
+  
+  for (i in 1:n_imp) {
+    if(!is.null(Y))
+      new_imp = jomo_1[jomo_1$Imputation == i, c(colnames_, "Y_copy")]
+    else
+      new_imp = jomo_1[jomo_1$Imputation == i, colnames_]
+    for(j in 1:dim(X)[2]){
+      if(type[j] == 1)
+        new_imp[,j] = as.integer(new_imp[,j]) - 1
+    }
+    X_imp[i,,]= as.matrix(new_imp)
+  }
+  return(X_imp)
+}
+
+imputation_JM_MLMM = JM_MLMM(
+  X,
+  Y,
+  Z,
+  subject_id, 
+  type = type, 
+  n_imp = 20, 
+  nburn = 10, 
+  nbetween=1,
+  seed = 1234, 
+  colnames = colnames(X))
+```
+
+We finally run mixedRF in sequential regression multivariate imputation. We set ErrorTolerance as 0.1 and MaxIterations as 5, for each imputation model. The initial missing value is done by LOCF and NOCF. The ErrorTolerance and MaxIterations should be set as 0.001 and 1000 for reproducibility.
+
+```{r mixed}
+predict.MixRF = function(object, newdata){
+   forestPrediction <- predict(object$forest, newdata=newdata, OOB=T)
+   RandomEffects <- predict(object$MixedModel, newdata=newdata, allow.new.levels=T)
+   completePrediction = forestPrediction + RandomEffects
+   return(completePrediction)
+}
+
+mixedRF_imp = function(X, Y = NULL, Z, subject_id, type, ErrorTolerance=0.001, MaxIterations=1000){
+  R = is.na(X)
+  X_locf_nocb <- apply_locf_nocb(cbind(X, Y), subject_id)
+  Y = X_locf_nocb[,dim(X_locf_nocb)[2]]
+  X = X_locf_nocb[,1:(dim(X_locf_nocb)[2] - 1)]
+  
+  
+  df = tibble(
+    Z1 = Z[,1],
+    Z2 = Z[,2],
+    subject_id = subject_id)
+
+  for(i in 1:dim(R)[2]){
+    if(sum(R[,i]) != 0){
+      if(i == 1){
+        x_train = as.matrix(rep(1, length(Y)))
+        colnames(x_train) = "1"
+      }else{
+        x_train = as.matrix(X[,1:(i-1)])
+        colnames(x_train) = paste0("X", 1:(i-1))
+      }
+      y_train = X[,i]
+      print("start trainning")
+      if(type[i] == 0)
+        mixrf_1 <- MixRF(Y = as.numeric(y_train), X = x_train, random='(0+Z1+Z2|subject_id)',data = df,initialRandomEffects=0, ErrorTolerance=ErrorTolerance, MaxIterations=MaxIterations)
+      if(type[i] == 1)
+        mixrf_1 <- MixRF(Y = (y_train), X = x_train, random='(0+Z1+Z2|subject_id)',data = df,initialRandomEffects=0, ErrorTolerance=ErrorTolerance, MaxIterations=MaxIterations)
+      y_predict = predict.MixRF(mixrf_1, newdata = cbind(x_train, df))
+      if(type[i] == 1)
+        y_predict = 1 * (y_predict >= 0.5)
+      X[R[,i],i] = y_predict[R[,i]]
+      print("finish trainning")
+    }
+  }
+
+  if(!is.null(Y)){
+    R_y = is.na(Y)
+    if(sum(R_y) > 0){
+      x_train = X
+      colnames(x_train) = paste0("X", 1:dim(R)[2])
+      y_train = Y
+      mixrf_1 <- MixRF(Y = y_train, X = x_train, random='(0+Z1+Z2|subject_id)',data = df, initialRandomEffects=0, ErrorTolerance=ErrorTolerance, MaxIterations=MaxIterations)
+      y_predict = predict.MixRF(mixrf_1, newdata = cbind(x_train, df))
+      Y[R_y] = y_predict[R_y]
+    }
+    imp = array(0, dim = c(1, dim(X)[1], dim(X)[2] + 1))
+    imp[1, , 1:dim(X)[2]] = X
+    imp[1, , 1+dim(X)[2]] = Y
+  }else{
+    imp = array(0, dim = c(1, dim(X)[1], dim(X)[2]))
+    imp[1, , 1:dim(X)[2]] = X
+  }
+  return(imp)
+}
+
+
+imputation_mixedRF = mixedRF_imp(
+  X,
+  Y,
+  Z,
+  subject_id, 
+  type = type,
+  ErrorTolerance=0.1, 
+  MaxIterations=1
+  )
+
+```
+
+
+# NICE algorithm
+
+NICE is a Monte Carlo g-formula estimator that simulates longitudinal trajectories of time-varying confounders and outcomes under specified treatment strategies. We used BART to fit the conditional models with 10 burn-in iterations and 10 posterior draws, and conducted 5 Monte Carlo simulations per imputed dataset, each with 6814 baseline covariates. To reproduce the results, please use 1000 iterations for burn-in iterations and posterior draws for each BART. And increase number of Monte Carlo simulations to 500.
+
+To simplify the computations, we only run the NICE for the dataset imputed by BMTrees:
+```{r NICE}
+library(BART3)
+
+MC_NICE = function(covariates, outcome, assignment, time, subject_id,type, cutoff=125, replicates = 100, nburn = 1000, npost = 1000){
+  n = length(unique(subject_id))
+  J = max(time)
+  L_model = sapply(1:dim(covariates)[2], function(x) list(NULL))
+  Y_model = gbart(cbind(covariates, assignment, time), outcome, printevery = 10, verbose = 1, rm.const = FALSE, ndpost=npost, nskip=nburn)
+  for(j in 1:dim(covariates)[2]){
+    print(j)
+    X_s = cbind(covariates[time < J,], time[time > 1], assignment[time < J])
+    Y_s = covariates[time > 1, j]
+    if(type[j] == 0)
+      L_model[[j]] = (BART3::wbart(X_s, Y_s, printevery = 10, rm.const = FALSE, ndpost=npost, nskip=nburn))
+    if(type[j] == 1)
+      L_model[[j]] = (BART3::pbart(X_s, as.logical(Y_s), printevery = 10, rm.const = FALSE, ndpost=npost, nskip=nburn))
+    cat("complete trianing for ", j, " model\n")
+  }
+  
+  mean_outcome = c()
+  
+  
+  for(m in 1:replicates){
+    cat("replicate:", m, "  total:", replicates, "\n")
+    new_covariates = dplyr::sample_n(covariates[time == 1,], 6814, replace = TRUE)
+    new_subject_id = seq(1:6814)
+    new_time = rep(1, 6814)
+    new_outcome = colMeans(predict(Y_model, cbind(new_covariates, 0, new_time)))
+    new_assignment = new_outcome >= cutoff
+    
+    for (j in 2:J) {
+      new_covariates = sapply(1:dim(covariates)[2], function(i){
+        if(type[i] == 0)
+          return(colMeans(predict(L_model[[i]], cbind(new_covariates, j, new_assignment))))
+        if(type[i] == 1)
+          return(predict(L_model[[i]], cbind(new_covariates, j, new_assignment))$prob.test.mean >= 0.5)
+      })
+      new_outcome = colMeans(predict(Y_model, cbind(new_covariates, new_assignment, j)))
+      new_assignment = (new_outcome >= cutoff) | new_assignment
+    }
+    mean_outcome = c(mean_outcome,  mean(new_outcome))
+  }
+  return(mean_outcome)
+}
+
+ 
+imputed_X = imputation_BMTrees$imputed_data
+
+subject_id = rep(1:(dim(imputed_X)[2] / 6), each = 6)
+time = rep(1:6, times = (dim(imputed_X)[2] / 6))
+replicates = 5
+ 
+result_BMTrees = sapply(1:length(seq(120, 160, 5)), function(h){
+   threshold = seq(120, 160, 5)[h]
+   return(sapply(1:dim(imputed_X)[1], function(i) {
+     print(paste(threshold, ":", i))
+     d1 = imputed_X[i,,]
+     outcome = d1[,13]
+     treatment = d1[,12]
+     covariates = data.frame(d1[,1:11])
+     colnames(covariates) = c("age", "race", "female", "bmi", "smk_cur", "lipid_med", "height", "weight", "waist", "hdl", "ldl")
+     time = time
+     cutoff = MC_NICE(covariates, outcome, treatment, time, subject_id, type, cutoff=threshold, replicates = replicates, nburn = 10, npost = 10)
+     cutoff
+   }))
+ })
+```
+
+Summary the results:
+```{r results}
+colnames(result_BMTrees) = seq(120, 160, 5)
+summary(result_BMTrees)
+```

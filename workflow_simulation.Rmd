@@ -1,5 +1,5 @@
 ---
-title: "workflow"
+title: "workflow_simulation"
 date: "2024-12-07"
 output: pdf_document
 ---
@@ -17,7 +17,7 @@ This R Markdown file demonstrates the workflow of the simulation studies describ
 ## Install and load the related package
 ```{r setup}
 require("devtools")
-install_github("https://github.com/zjg540066169/SBMTrees")
+devtools::install_github("https://github.com/zjg540066169/SBMTrees")
 library(SBMTrees)
 library(lme4)
 library(jomo)
@@ -372,7 +372,7 @@ imputation_JM_MLMM = JM_MLMM(
   colnames = colnames(imputation_data$X_mis))
 ```
 
-We finally run mixedRF in sequential regression multivariate imputation. We set ErrorTolerance as 0.001 and MaxIterations as 1000, for each imputation model. Due to computational complexity, we only run the first round, such that we use $X_{1:6}$ to impute $X_9$, $X_{1:6, 9}$ to impute $X_{8}$, $X_{1:6, 8, 9}$ to impute $X_{7}$, $X_{1:9}$ to impute $Y$. The initial missing value is done by LOCF and NOCF.
+We finally run mixedRF in sequential regression multivariate imputation. We set ErrorTolerance as 0.001 and MaxIterations as 1000, for each imputation model. Due to computational complexity, we only run the first round, such that we use $X_{1:6}$ to impute $X_9$, $X_{1:6, 9}$ to impute $X_{8}$, $X_{1:6, 8, 9}$ to impute $X_{7}$, $X_{1:9}$ to impute $Y$. The initial missing value is done by LOCF and NOCF. The running time for this model is more than 15 hours, I recommend to change ErrorTolerance and MaxIterations to make running time shorter.
 
 ```{r mixedRF_imputation}
 mixedRF_imp = function(X, Y = NULL, Z, subject_id, type){
